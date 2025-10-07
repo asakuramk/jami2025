@@ -1,186 +1,136 @@
 <?php
-if (!defined('ABSPATH')) exit;
-add_editor_style();
-
-
 // セッション開始
 add_action('init', function () {
-if (!session_id()) session_start();
+    if (!session_id()) {
+        session_start();
+    }
 });
 
-
-// WPForms送信完了時の処理
+// WPForms送信完了時のAI評価処理
 add_action('wpforms_process_complete', 'wpforms_ai_detailed_scoring', 10, 4);
-
 
 function wpforms_ai_detailed_scoring($fields, $entry, $form_data, $entry_id)
 {
-if (!defined('OPENAI_API_KEY')) {
-error_log('OPENAI_API_KEY not defined.');
-return;
-}
-$api_key = OPENAI_API_KEY;
+    if (!defined('OPENAI_API_KEY')) return;
+    $api_key = OPENAI_API_KEY;
 
+    // フィールドID定義
+    $FIELD_NAME     = 1;
+    $FIELD_EMAIL    = 2;
+    $FIELD_FEEDBACK = 4;
+    $FIELD_TITLE    = 7;
+    $FIELD_CATEGORY = 8;
 
-// フィールドID
-$FIELD_NAME = 1;
-$FIELD_EMAIL = 2;
-$FIELD_FEEDBACK = 4;
+    // 入力取得
+    $name     = sanitize_text_field($fields[$FIELD_NAME]['value']);
+    $email    = sanitize_email($fields[$FIELD_EMAIL]['value']);
+    $feedback = sanitize_textarea_field($fields[$FIELD_FEEDBACK]['value']);
+    $title    = sanitize_text_field($fields[$FIELD_TITLE]['value']);
+    $category = sanitize_text_field($fields[$FIELD_CATEGORY]['value']);
 
+    // ChatGPTプロンプト
+    $prompt = "あなたは教育評価の専門家です。\n\n"
+        . "以下の感想文を、次の5つの観点でそれぞれ20点満点で評価し、総合点を算出してください。\n"
+        . "最後に「合計: xx点」の形式で出力してください。\n"
+        . "{$name}さんに語りかけるように、前向きで励ましのコメントを添えてください。\n\n"
+        . "評価観点：\n"
+        . "1. タイトルとの関係性\n"
+        . "2. キーワードの出現頻度\n"
+        . "3. 論理的構成\n"
+        . "4. 内容の具体性\n"
+        . "5. 表現力\n\n"
+        . "タイトル：「{$title}」\n感想文:\n{$feedback}";
 
-// データ取得
-$name = sanitize_text_field($fields[$FIELD_NAME]['value']);
-$email = sanitize_email($fields[$FIELD_EMAIL]['value']);
-$feedback = sanitize_textarea_field($fields[$FIELD_FEEDBACK]['value']);
+    // ChatGPT API呼び出し
+    $response = wp_remote_post(
+        'https://api.openai.com/v1/chat/completions',
+        [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api_key,
+                'Content-Type'  => 'application/json',
+            ],
+            'body' => json_encode([
+                'model' => 'gpt-3.5-turbo',
+                'messages'  => [
+                    ['role' => 'system', 'content' => 'You are a grading assistant.'],
+                    ['role' => 'user',   'content' => $prompt],
+                ],
+                'temperature' => 0.4,
+                'max_tokens'  => 500,
+            ]),
+            'timeout' => 30,
+        ]
+    );
 
+    // レスポンス処理
+    if (is_wp_error($response)) {
+        $result_text = "AI通信エラーが発生しました。";
+    } else {
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        $result_text = trim($body['choices'][0]['message']['content'] ?? "AIからのレスポンスが不正でした。");
+    }
 
-$post_id = $form_data['post_id'] ?? get_the_ID();
-$title = get_the_title($post_id);
+    // 点数抽出（xx点 or xx/100点 に対応）
+    if (preg_match('/合計[:：]\s*([0-9]{1,3})(?:\/100)?点/u', $result_text, $m)) {
+        $total_score = $m[1];
+    } else {
+        $total_score = '';
+    }
 
+    // セッション保存（nl2brは出力時に処理）
+    $_SESSION['ai_feedback_result'] = esc_html($result_text);
+    $_SESSION['ai_title']           = $title;
 
-// プロンプト
-$prompt = "あなたは教育評価の専門家です。\n\n"
-. "以下の感想文を、次の5つの観点でそれぞれ20点満点で評価し、総合点を算出してください。\n"
-. "各項目ごとにスコアと、簡潔なコメントを必ず記載してください。\n\n"
-. "評価観点：\n"
-. "1. タイトルとの関係性（Relevance）\n"
-. "2. キーワードの出現頻度（Keyword）\n"
-. "3. 論理的構成（Structure）\n"
-. "4. 内容の具体性（Specificity）\n"
-. "5. 表現力（Expression）\n\n"
-. "形式:\n"
-. "関連性: xx点（コメント）\n"
-. "キーワード: xx点（コメント）\n"
-. "論理性: xx点（コメント）\n"
-. "具体性: xx点（コメント）\n"
-. "表現力: xx点（コメント）\n"
-. "合計: xx点\n\n"
-. "応援メッセージ: （やる気を出す一言）\n\n"
-. "タイトル：「{$title}」\n感想文:\n{$feedback}";
+    // ユーザー宛メール送信
+    $user_subject = '【提出完了】あなたのAI感想文評価';
+    $user_body    = "{$name}様\n\n"
+                 . "ご提出ありがとうございました！以下がAIによるフィードバックです。\n\n"
+                 . "📌 タイトル：「{$title}」\n"
+                 . "📊 評価結果：\n\n"
+                 . "{$result_text}\n\n"
+                 . "またのご利用をお待ちしております。";
+    wp_mail($email, $user_subject, $user_body);
 
-
-// OpenAI呼び出し
-$response = wp_remote_post('https://api.openai.com/v1/chat/completions', [
-'headers' => [
-'Authorization' => 'Bearer ' . $api_key,
-'Content-Type' => 'application/json',
-],
-'body' => json_encode([
-'model' => 'gpt-4o',
-'messages' => [
-['role' => 'system', 'content' => 'You are a grading assistant.'],
-['role' => 'user', 'content' => $prompt]
-],
-'temperature' => 0.4,
-'max_tokens' => 500,
-]),
-'timeout' => 30,
-]);
-
-
-// AIレスポンス処理
-if (is_wp_error($response)) {
-$result_text = "AI通信エラーが発生しました。";
-} else {
-$body = json_decode(wp_remote_retrieve_body($response), true);
-$content = trim($body['choices'][0]['message']['content'] ?? '');
-$result_text = $content ?: "AIからのレスポンスが不正でした。";
-}
-
-
-// セッションに保存
-$_SESSION['ai_feedback_result'] = nl2br(esc_html($result_text));
-$_SESSION['ai_title'] = $title;
-
-
-// メール本文（管理者向け）
-$admin_subject = '【新規提出】AI採点詳細';
-$admin_body = <<<EOT
-【新規提出】
-名前: {$name}
-メール: {$email}
-タイトル: {$title}
-
-
-=== 感想文 ===
-{$feedback}
-
-
-=== AI評価結果 ===
-{$result_text}
-EOT;
-
-
-// メール本文（ユーザー向け）
-$user_subject = '【提出完了】あなたのAI感想文評価';
-$user_body = <<<EOT
-{$name}様
-
-
-ご提出ありがとうございました！
-以下がAIによる詳細評価です。
-
-
-タイトル：「{$title}」
-
-
-{$result_text}
-
-
-またのご利用をお待ちしております。
-EOT;
-
-
-// メール送信
-wp_mail('asakuramk@gmail.com', $admin_subject, $admin_body);
-wp_mail($email, $user_subject, $user_body);
-
-
-// Google Apps Script Webhook URL（あなたのURLに差し替え）
-$webhook_url = 'https://script.google.com/macros/s/AKfycby6Iz0EOMa6PrvLaZbqGVAqxqcKaHGC2ARg4w0VkHXJG8wqasClCchmivFCbptMkWy8wA/exec';
-
-
-// タイトルとカテゴリのフォームID（例：ID #7 → title, ID #8 → category）
-$FIELD_TITLE = 7;
-$FIELD_CATEGORY = 8;
-
-
-$video_title = sanitize_text_field($fields[$FIELD_TITLE]['value']);
-$video_category = sanitize_text_field($fields[$FIELD_CATEGORY]['value']);
-
-
-$webhook_payload = [
-'name' => $name,
-'email' => $email,
-'title' => $video_title,
-'category' => $video_category,
-'feedback' => $feedback,
-'ai_result' => $result_text,
-];
-
-
-wp_remote_post($webhook_url, [
-'headers' => ['Content-Type' => 'application/json'],
-'body' => json_encode($webhook_payload),
-'timeout' => 15,
-]);
-
-
+    // Googleスプレッドシート（GAS）連携
+    $webhook_url = 'https://script.google.com/macros/s/AKfycbwvZv6l1mv2iY9BJHG-xhCanQL2Lm-RaSjTc4pf4zZ6OCdhqMM9fIvhklZ7LlUPEx9p7g/exec';
+    $payload = [
+        'name'      => $name,
+        'email'     => $email,
+        'category'  => $category,
+        'title'     => $title,
+        'feedback'  => $feedback,
+        'ai_result' => $total_score,
+    ];
+    wp_remote_post($webhook_url, [
+        'headers' => ['Content-Type' => 'application/json'],
+        'body'    => json_encode($payload),
+        'timeout' => 15,
+    ]);
 }
 
-
-// 結果表示ショートコード
+// ショートコード：評価結果表示
 add_shortcode('show_ai_score', function () {
-if (!session_id()) session_start();
-$title = $_SESSION['ai_title'] ?? 'タイトル取得エラー';
-$result = $_SESSION['ai_feedback_result'] ?? '採点結果が見つかりませんでした。';
-return "<div style='background:#f6faff;padding:20px;border-left:5px solid #3399ff;'>
-<h3>🎓 評価結果</h3>
-<strong>📌 タイトル：</strong>{$title}<br><br>
-<pre style='white-space:pre-wrap;font-size:1.1em;'>{$result}</pre>
-</div>";
+    if (!session_id()) session_start();
+    $title  = $_SESSION['ai_title'] ?? 'タイトル取得エラー';
+    $result_raw = $_SESSION['ai_feedback_result'] ?? '採点結果が見つかりませんでした。';
+    $result = nl2br($result_raw);  // 改行処理
+
+    return "<div style='background:#f6faff;padding:20px;border-left:5px solid #3399ff;'>
+        <h3>🎓 評価結果</h3>
+        <strong>📌 タイトル：</strong>" . esc_html($title) . "<br><br>
+        <div style='font-size:1.1em; line-height:1.6;'>{$result}</div>
+    </div>";
 });
 
-
-// ショートコードを確認画面にも反映
+// WPForms 確認画面にもショートコードを反映
 add_filter('wpforms_frontend_confirmation_message', 'do_shortcode');
+
+// 管理者メール通知を抑止
+add_action('wpforms_process', function($fields, $entry, $form_data) {
+    add_filter('wpforms_email_send', function($email, $email_obj) {
+        if ($email['recipient'] === get_option('admin_email')) {
+            return false;
+        }
+        return $email;
+    }, 10, 2);
+}, 10, 3);
