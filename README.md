@@ -10,4 +10,10 @@ WordPress管理画面の「外観」 > 「テーマファイルエディター�
 
 コードをペーストしてください。
 
-もしくは、FTPにてwordpressをインストールしているサーバーのファイル（wp-content>themes>自身のテーマ>functions.php）を直接書き換えてください。
+もしくは、FTPにてwordpressをインストールしているサーバーのそれぞれのファイルを直接書き換えてください。
+  wp-config.php
+  wp-content>themes>自身のテーマ>functions.php
+
+なお、APIキーのみ
+  
+  
