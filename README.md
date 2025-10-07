@@ -9,3 +9,5 @@
 WordPress管理画面の「外観」 > 「テーマファイルエディター」からfunctions.phpを開きます。
 
 コードをペーストしてください。
+
+もしくは、FTPにてwordpressをインストールしているサーバーのファイル（wp-content>themes>自身のテーマ>functions.php）を直接書き換えてください。
