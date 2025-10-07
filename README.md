@@ -14,6 +14,6 @@ WordPress管理画面の「外観」 > 「テーマファイルエディター�
   wp-config.php
   wp-content>themes>自身のテーマ>functions.php
 
-なお、APIキーのみ
+なお、セキュリティーのため、APIキーやサーバー設定などの.envファイルはインストールフォルダー外に保存しておくようにしてください。
   
   
